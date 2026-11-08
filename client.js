@@ -26,6 +26,10 @@ window.__ModuleLoader__.load({
         'mode.perChat': '人设按对话开启',
         'mode.perChatHint': '在输入框下方或新会话行点开关，只影响当前对话；换对话不会跟着变，归档对话时会自动关闭。',
         'mode.perChatCount': '已开启 {count} 个对话；点对话里的开关只改当前这个。',
+        'mode.sessions': '已开启人设的对话',
+        'mode.sessionsHint': '在这里可以直接关掉某个对话的人设，不用切到那个对话。',
+        'mode.sessionsEmpty': '目前没有开启人设的对话。',
+        'mode.closeSession': '关闭',
         'mode.clearAll': '全部关闭',
         'card.active': '当前人物卡',
         'card.name': '名字',
@@ -279,6 +283,10 @@ window.__ModuleLoader__.load({
         'mode.perChat': 'Persona is per chat',
         'mode.perChatHint': 'Use the switch below the composer or in the new-chat row; it only affects that chat and turns off automatically when the chat is archived.',
         'mode.perChatCount': 'On in {count} chats; the switch only changes the current one.',
+        'mode.sessions': 'Chats with persona on',
+        'mode.sessionsHint': 'Turn a chat\'s persona off here without switching to that chat.',
+        'mode.sessionsEmpty': 'No chats currently have persona on.',
+        'mode.closeSession': 'Turn off',
         'mode.clearAll': 'Turn all off',
         'card.active': 'Active character',
         'card.name': 'Name',
@@ -1102,7 +1110,7 @@ window.__ModuleLoader__.load({
           ),
         ),
         tab === 'persona'
-          ? h(PersonaTab, { t, state, draft, setDraft, run, busy })
+          ? h(PersonaTab, { t, state, draft, setDraft, run, busy, useSessions: props.useSessions })
           : null,
         tab === 'memory'
           ? h(MemoryTab, { t, state, run, busy })
@@ -1123,8 +1131,105 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function EnabledSessionRows(props) {
+      const { t, ids, useSessions, run, busy } = props
+      const snapshot = useSessions((state) => state)
+      const rows = ids
+        .map((id) => {
+          const session = snapshot && snapshot.byId ? snapshot.byId[id] : null
+          return {
+            id,
+            title: (session && (session.displayTitle || session.title)) || id,
+            updatedAt: (session && session.updatedAt) || 0,
+          }
+        })
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+      return h(
+        'div',
+        { className: 'dspm-session-list' },
+        rows.map((row) =>
+          h(
+            'div',
+            { className: 'dspm-session-row', key: row.id },
+            h(
+              'div',
+              { className: 'dspm-session-text' },
+              h('div', { className: 'dspm-session-name', title: row.id }, row.title),
+              h('div', { className: 'dspm-session-id' }, row.id.slice(0, 8) + '…'),
+            ),
+            h(
+              Btn,
+              {
+                variant: 'danger',
+                disabled: busy,
+                onClick: () =>
+                  run(
+                    () => store.mutate('/toggle', { sessionId: row.id, enabled: false }),
+                    t('notice.modeOff'),
+                  ),
+              },
+              t('mode.closeSession'),
+            ),
+          ),
+        ),
+      )
+    }
+
+    function EnabledSessionIdRows(props) {
+      const { t, ids, run, busy } = props
+      return h(
+        'div',
+        { className: 'dspm-session-list' },
+        ids.map((id) =>
+          h(
+            'div',
+            { className: 'dspm-session-row', key: id },
+            h(
+              'div',
+              { className: 'dspm-session-text' },
+              h('div', { className: 'dspm-session-name' }, id),
+            ),
+            h(
+              Btn,
+              {
+                variant: 'danger',
+                disabled: busy,
+                onClick: () =>
+                  run(
+                    () => store.mutate('/toggle', { sessionId: id, enabled: false }),
+                    t('notice.modeOff'),
+                  ),
+              },
+              t('mode.closeSession'),
+            ),
+          ),
+        ),
+      )
+    }
+
+    function EnabledSessionsCard(props) {
+      const { t, ids, useSessions, run, busy } = props
+      return h(
+        'div',
+        { className: 'dspm-card' },
+        h(
+          'div',
+          { className: 'dspm-card-title' },
+          t('mode.sessions'),
+          h('span', { className: 'dspm-badge' }, ids.length),
+          h(InfoHint, { text: t('mode.sessionsHint') }),
+          h(Btn, { onClick: () => store.refresh(), disabled: busy }, t('btn.refresh')),
+        ),
+        ids.length
+          ? useSessions
+            ? h(EnabledSessionRows, { t, ids, useSessions, run, busy })
+            : h(EnabledSessionIdRows, { t, ids, run, busy })
+          : h(Empty, null, t('mode.sessionsEmpty')),
+      )
+    }
+
     function PersonaTab(props) {
-      const { t, state, draft, setDraft, run, busy } = props
+      const { t, state, draft, setDraft, run, busy, useSessions } = props
       if (!draft) return null
       const sections = Array.isArray(draft.sections) ? draft.sections : []
       const traits = asTraitArray(draft.traits)
@@ -1203,7 +1308,17 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'dspm-card' },
+        { className: 'dspm-stack' },
+        h(EnabledSessionsCard, {
+          t,
+          ids: Array.isArray(state.settings.personaSessions) ? state.settings.personaSessions : [],
+          useSessions,
+          run,
+          busy,
+        }),
+        h(
+          'div',
+          { className: 'dspm-card' },
         h(
           'div',
           { className: 'dspm-card-head' },
@@ -1405,6 +1520,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dspm-actions' },
           h(Btn, { variant: 'primary', onClick: save, disabled: busy }, busy ? t('btn.saving') : t('btn.save')),
+        ),
         ),
       )
     }
@@ -2677,6 +2793,11 @@ window.__ModuleLoader__.load({
 .dspm-lib-body { margin: 0; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .dspm-lib-link { color: var(--dsw-alias-state-business-primary, #4176e6); font-size: 11px; text-decoration: none; word-break: break-all; }
 .dspm-lib-link:hover { text-decoration: underline; }
+.dspm-session-list { display: flex; flex-direction: column; gap: 8px; }
+.dspm-session-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-base); }
+.dspm-session-text { flex: 1; min-width: 0; }
+.dspm-session-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dspm-session-id { color: var(--dsw-alias-label-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .dspm-sticker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
 .dspm-sticker { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); }
 .dspm-sticker-img { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 8px; background: var(--dsw-alias-bg-base); }
