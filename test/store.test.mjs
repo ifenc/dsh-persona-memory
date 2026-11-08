@@ -169,6 +169,25 @@ test('per-conversation persona flags leave an off reminder', () => {
   }
 })
 
+test('archived sessions are turned off and reminded', () => {
+  const { store, cleanup } = openStore()
+  try {
+    store.setSessionPersona('s1', true)
+    store.setSessionPersona('s2', true)
+
+    assert.equal(store.reconcileArchivedSessions(['s1', 's3']), 1)
+    assert.equal(store.isSessionPersona('s1'), false)
+    assert.equal(store.isPersonaOffReminder('s1'), true)
+    assert.equal(store.isSessionPersona('s2'), true)
+    assert.equal(store.reconcileArchivedSessions(['s1']), 0, 'already-off archived chats are not counted again')
+
+    store.setSessionPersona('s1', true)
+    assert.equal(store.isPersonaOffReminder('s1'), false)
+  } finally {
+    cleanup()
+  }
+})
+
 test('importing cards preserves their ids so memories can follow', () => {
   const source = openStore()
   const target = openStore()

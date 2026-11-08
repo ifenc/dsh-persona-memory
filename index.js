@@ -182,6 +182,30 @@ export function apply(ctx) {
     return `${origin}${STICKER_ROUTE}/${id}`
   }
 
+  const archivedSessionIds = () => {
+    try {
+      const registry = ctx.get('workspaceRegistry')
+      const ids = registry && registry.archivedSessionIds
+      return ids ? [...ids] : []
+    } catch {
+      return []
+    }
+  }
+
+  const reconcileArchivedSessions = () => {
+    try {
+      const ids = archivedSessionIds()
+      if (ids.length) store.reconcileArchivedSessions(ids)
+    } catch {
+      /* archive bookkeeping must never break activation */
+    }
+  }
+
+  reconcileArchivedSessions()
+  const archiveTimer = setInterval(reconcileArchivedSessions, 10000)
+  if (typeof archiveTimer.unref === 'function') archiveTimer.unref()
+  ctx.effect(() => () => clearInterval(archiveTimer), 'persona-memory: archived-session watcher')
+
   /* ---------------------------------------------------------------- */
   /* System prompt — one scoped section per root conversation          */
   /* ---------------------------------------------------------------- */
@@ -246,6 +270,19 @@ export function apply(ctx) {
     if (!id) return
     agentSections.delete(id)
     recentQueries.delete(id)
+  })
+
+  // Archiving with stopActivity emits this only after the archive is durable.
+  // Treat it like the user turning the persona off, so reopening the
+  // conversation starts in the normal voice instead of the old character.
+  ctx.on('workspace/session-stop', (request) => {
+    try {
+      const id = request?.sessionId ? String(request.sessionId) : ''
+      if (!id) return
+      if (store.isSessionPersona(id)) store.setSessionPersona(id, false)
+    } catch {
+      /* archiving must never fail because of persona bookkeeping */
+    }
   })
 
   try {
@@ -388,6 +425,7 @@ export function apply(ctx) {
         if (!args.card_id) throw new Error('card_id is required')
         store.deleteCard(String(args.card_id))
       }
+      reconcileArchivedSessions()
       const state = store.publicState()
       const card = state.activeCard
       const sessionEnabled = sessionId ? store.isSessionPersona(sessionId) : false
@@ -830,7 +868,10 @@ export function apply(ctx) {
   /* Web API for the settings page                                     */
   /* ---------------------------------------------------------------- */
 
-  const buildState = () => ({ ...store.publicState(), version: PLUGIN_VERSION })
+  const buildState = () => {
+    reconcileArchivedSessions()
+    return { ...store.publicState(), version: PLUGIN_VERSION }
+  }
 
   ctx.effect(
     () =>
