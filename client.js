@@ -987,6 +987,12 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [draft, setDraft] = useState(null)
 
+      // The store caches one snapshot for the whole page. Re-read on every
+      // settings open so archive/session changes made elsewhere show up.
+      useEffect(() => {
+        store.refresh()
+      }, [])
+
       const activeId = state && state.activeCardId
       const activeStamp = state && state.activeCard ? state.activeCard.updatedAt : 0
       useEffect(() => {
