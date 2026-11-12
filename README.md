@@ -55,10 +55,10 @@ English: a local-first DSH plugin that keeps a character card in the system prom
 
 ## 数据与隐私
 
-- 数据默认保存在 `DSH_HOME/persona-memory/<profile>/store.json`（`<profile>` 是当前 DSH profile，例如 `desktop`），可以用环境变量 `DSH_PERSONA_MEMORY_DIR` 覆盖目录。旧版本的 `DSH_HOME/persona-memory/store.json` 会在首次启动时复制到新位置，旧文件保留。
+- 数据默认保存在 `DSH_HOME/persona-memory/store.json`。如果运行环境设置了 `DSH_PROFILE`（CLI / Web 场景通常会有），会改为 `DSH_HOME/persona-memory/<profile>/store.json`，旧文件会在首次启动时复制过去并保留原文件；可以用环境变量 `DSH_PERSONA_MEMORY_DIR` 覆盖目录。桌面版通常不带 `DSH_PROFILE`，因此各 profile 共用同一份数据。
 - 每次写入都是「临时文件 → 覆盖」的原子替换，并把上一版复制成 `store.json.bak`。如果主文件损坏，插件会把损坏文件另存为 `store.json.corrupt-<时间戳>`，再尝试用 `.bak` 恢复，恢复情况会显示在设置页顶部；无法读取又无法另存时会暂停写入，避免覆盖。
 - 导入备份的大小上限是 64MB（前端和服务端一致）。贴纸以 data URL 计入备份，多张 2MB 表情包会让备份很大，超过上限时导入会被拒绝。
-- 同一个 profile 同时运行两个 DSH 实例时，两边各自持有内存快照，后写入的会覆盖先写入的；请避免同时运行。
+- 同一个数据目录被两个 DSH 实例同时使用时（例如桌面版和 `dsh web` 共用），两边各自持有内存快照，后写入的会覆盖先写入的；如果想让它们分开，给其中一个设置 `DSH_PERSONA_MEMORY_DIR`，或让运行环境带上不同的 `DSH_PROFILE`。
 - 所有数据都在本机。除「检查更新」会向 GitHub 读取 `package.json`（只带 User-Agent，不上传任何本地数据）外，插件不发起网络请求。
 - 人设、记忆、日记、资料库和表情包的名称/标签会进入发给模型的提示词；请不要把不希望发送给模型的内容写进人物卡或资料库。
 - 表情包图片以 data URL 保存在本机的 `store.json` 里，只由本地接口提供，不上传；单张限制 2MB，会占用数据文件体积。
