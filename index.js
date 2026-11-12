@@ -11,7 +11,8 @@ import { compareSemver } from './lib/version.js'
 
 const API_BASE = '/api/dsh-persona-memory'
 const STICKER_ROUTE = `${API_BASE}/sticker`
-const MAX_BODY_BYTES = 8 * 1024 * 1024
+const MAX_BODY_BYTES = 64 * 1024 * 1024
+const API_HEADER = 'x-dsh-persona-memory'
 const REPO_URL = 'https://github.com/ifenc/dsh-persona-memory'
 const RAW_PACKAGE_URL = 'https://raw.githubusercontent.com/ifenc/dsh-persona-memory/main/package.json'
 const UPDATE_SOURCES = [
@@ -28,7 +29,7 @@ try {
   /* keep the fallback version */
 }
 
-export const inject = ['tools', 'systemPrompt', 'webServer', 'agents', 'sessions', 'workingDirectory']
+export const inject = ['tools', 'systemPrompt', 'webServer', 'agents', 'sessions']
 
 function blocksToText(content) {
   if (typeof content === 'string') return content
@@ -86,6 +87,37 @@ function sendJson(res, status, payload) {
     'content-length': Buffer.byteLength(body),
   })
   res.end(body)
+}
+
+function requestHostname(req) {
+  const host = String(req.headers.host || '').toLowerCase()
+  if (!host) return ''
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']')
+    return end > 0 ? host.slice(1, end) : host
+  }
+  return host.split(':')[0]
+}
+
+/** Block DNS rebinding: only answer to the host we are actually serving on. */
+function isAllowedHost(req) {
+  const hostname = requestHostname(req)
+  if (!hostname) return false
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true
+  if (/^127\./.test(hostname)) return true
+  const local = String((req.socket && req.socket.localAddress) || '').toLowerCase()
+  return Boolean(local) && hostname === local
+}
+
+/** Only same-origin browser requests may touch the API. */
+function isSameOriginRequest(req) {
+  const origin = req.headers.origin
+  if (!origin) return true
+  try {
+    return new URL(origin).host === String(req.headers.host || '')
+  } catch {
+    return false
+  }
 }
 
 let updateCheckCache = { at: 0, value: null }
@@ -882,18 +914,8 @@ export function apply(ctx) {
           try {
             const url = new URL(req.url ?? '/', 'http://localhost')
             const route = url.pathname.replace(/\/+$/, '')
-            if (req.method === 'GET' && (route === `${API_BASE}/state` || route === API_BASE)) {
-              sendJson(res, 200, buildState())
-              return
-            }
-            if (req.method === 'GET' && route === `${API_BASE}/update-check`) {
-              sendJson(res, 200, await checkForUpdate())
-              return
-            }
-            if (req.method === 'GET' && route === `${API_BASE}/export`) {
-              sendJson(res, 200, store.exportData(String(url.searchParams.get('kind') ?? 'all')))
-              return
-            }
+            // Sticker images load through <img>, which cannot send custom
+            // headers. They stay public on purpose (ids are random UUIDs).
             if (req.method === 'GET' && route.startsWith(`${STICKER_ROUTE}/`)) {
               const id = decodeURIComponent(route.slice(STICKER_ROUTE.length + 1))
               const sticker = store.getStickerAny(id)
@@ -909,6 +931,29 @@ export function apply(ctx) {
                 'cache-control': 'public, max-age=31536000, immutable',
               })
               res.end(bytes)
+              return
+            }
+            // Everything else is state/import/export: require the client
+            // header (blocks CSRF) and answer only on the served host
+            // (blocks DNS rebinding).
+            if (!isAllowedHost(req) || !isSameOriginRequest(req)) {
+              sendJson(res, 403, { ok: false, error: 'cross-origin request rejected' })
+              return
+            }
+            if (req.headers[API_HEADER] !== '1') {
+              sendJson(res, 403, { ok: false, error: 'missing client header' })
+              return
+            }
+            if (req.method === 'GET' && (route === `${API_BASE}/state` || route === API_BASE)) {
+              sendJson(res, 200, buildState())
+              return
+            }
+            if (req.method === 'GET' && route === `${API_BASE}/update-check`) {
+              sendJson(res, 200, await checkForUpdate())
+              return
+            }
+            if (req.method === 'GET' && route === `${API_BASE}/export`) {
+              sendJson(res, 200, store.exportData(String(url.searchParams.get('kind') ?? 'all')))
               return
             }
             if (req.method !== 'POST') {

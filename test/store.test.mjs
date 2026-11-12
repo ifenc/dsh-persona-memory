@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { PersonaStore, buildPersonaPrompt } from '../lib/store.js'
+import { PersonaStore, buildPersonaPrompt, resolveDataDir } from '../lib/store.js'
 
 const DAY = 24 * 60 * 60 * 1000
 const TINY_PNG =
@@ -521,5 +521,118 @@ test('sticker export/import and card deletion', () => {
   } finally {
     source.cleanup()
     target.cleanup()
+  }
+})
+
+test('a corrupt store is quarantined and the backup is restored', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-persona-corrupt-'))
+  let reopened = null
+  try {
+    const first = new PersonaStore({ dir })
+    first.addMemory({ text: '备份里的第一条' })
+    first.addMemory({ text: '备份里的第二条' })
+    first.dispose()
+
+    writeFileSync(path.join(dir, 'store.json'), '{ this is not json', 'utf8')
+    reopened = new PersonaStore({ dir })
+    assert.equal(reopened.state.memories.length, 2)
+    assert.ok(reopened.notices.some((notice) => notice.kind === 'corrupt-store'))
+    assert.ok(reopened.notices.some((notice) => notice.kind === 'restored-from-backup'))
+    assert.ok(
+      readdirSync(dir).some((name) => name.startsWith('store.json.corrupt-')),
+      'the unreadable file must be preserved',
+    )
+    // The restored backup only lives in memory until the next write.
+    reopened.persistSync()
+    assert.ok(existsSync(path.join(dir, 'store.json')))
+  } finally {
+    if (reopened) reopened.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a corrupt store without a backup starts empty but never overwrites the original', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-persona-corrupt-'))
+  let store = null
+  try {
+    writeFileSync(path.join(dir, 'store.json'), 'garbage', 'utf8')
+    store = new PersonaStore({ dir })
+    assert.equal(store.state.memories.length, 0)
+    assert.ok(store.notices.some((notice) => notice.kind === 'corrupt-store'))
+    assert.ok(
+      readdirSync(dir).some((name) => name.startsWith('store.json.corrupt-')),
+      'the original must survive under a quarantine name',
+    )
+    assert.ok(!existsSync(path.join(dir, 'store.json')), 'nothing is written back yet')
+  } finally {
+    if (store) store.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('writes create a .bak rotation and leave no temp files behind', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-persona-atomic-'))
+  let store = null
+  try {
+    store = new PersonaStore({ dir })
+    store.addMemory({ text: '第一条' })
+    store.addMemory({ text: '第二条' })
+    const files = readdirSync(dir)
+    assert.ok(files.includes('store.json'))
+    assert.ok(files.includes('store.json.bak'))
+    assert.ok(
+      !files.some((name) => name.includes('.tmp-')),
+      `temp files should not survive: ${files.join(', ')}`,
+    )
+  } finally {
+    if (store) store.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('persistSync refuses to overwrite when the unreadable file could not be quarantined', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-persona-blocked-'))
+  let store = null
+  try {
+    store = new PersonaStore({ dir })
+    store.writeBlocked = true
+    assert.throws(() => store.persistSync(), /阻止写入/)
+  } finally {
+    if (store) store.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the data directory is per profile and legacy stores are migrated once', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'dsh-home-'))
+  const saved = {
+    home: process.env.DSH_HOME,
+    profile: process.env.DSH_PROFILE,
+    override: process.env.DSH_PERSONA_MEMORY_DIR,
+  }
+  let store = null
+  try {
+    delete process.env.DSH_PERSONA_MEMORY_DIR
+    process.env.DSH_HOME = home
+    process.env.DSH_PROFILE = 'desktop'
+    const legacyDir = path.join(home, 'persona-memory')
+    const legacyFile = path.join(legacyDir, 'store.json')
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(legacyFile, JSON.stringify(legacyStore({ memories: [] })), 'utf8')
+
+    assert.equal(resolveDataDir(), path.join(legacyDir, 'desktop'))
+
+    store = new PersonaStore()
+    assert.equal(store.file, path.join(home, 'persona-memory', 'desktop', 'store.json'))
+    assert.ok(existsSync(store.file))
+    assert.ok(store.notices.some((notice) => notice.kind === 'migrated'))
+  } finally {
+    if (store) store.dispose()
+    if (saved.home === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved.home
+    if (saved.profile === undefined) delete process.env.DSH_PROFILE
+    else process.env.DSH_PROFILE = saved.profile
+    if (saved.override !== undefined) process.env.DSH_PERSONA_MEMORY_DIR = saved.override
+    rmSync(home, { recursive: true, force: true })
   }
 })

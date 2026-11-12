@@ -42,7 +42,8 @@ window.__ModuleLoader__.load({
         'card.defaultName': '新人物卡',
         'card.copy': '复制当前卡',
         'card.delete': '删除',
-        'card.deleteConfirm': '确定删除这张人物卡吗？它的全部记忆、日记和资料库也会一起删除。',
+        'card.deleteConfirm': '确定删除这张人物卡吗？它的全部记忆、日记、资料库和表情包也会一起删除。',
+        'card.discardConfirm': '当前人物卡有未保存的修改，继续会丢失这些修改。要继续吗？',
         'card.traits': '表现权重',
         'card.traitsHint': '每个权重有名字和 0–100 的数值；可以自己添加（毒舌、黏人、正经…），也可以删除或改名。数值越高，这个特质越明显。',
         'card.addTrait': '添加权重',
@@ -244,7 +245,7 @@ window.__ModuleLoader__.load({
         'io.importAll': '导入全部备份',
         'io.exported': '已导出文件。',
         'io.invalid': '文件不是有效的 JSON。',
-        'io.tooLarge': '文件太大（上限 8MB）。',
+        'io.tooLarge': '文件太大（上限 64MB）。',
         'io.merge': '合并导入',
         'io.replace': '覆盖导入',
         'io.merged': '已合并导入。',
@@ -253,6 +254,15 @@ window.__ModuleLoader__.load({
         'io.failed': '导出失败。',
         'io.hint': '导出为 JSON 文件；导入时可选择合并或覆盖。',
         'io.scopeNote': '导入备份不会自动启用范围设置以外的对话。',
+        'io.replaceConfirm': '覆盖导入会替换当前数据，确定继续吗？',
+        'io.kindMismatch': '这个文件是「{kind}」类型，和当前选择不一致。',
+        'io.imported': '导入结果：人物卡 {cards}、记忆 {memories}、日记 {diaries}、资料 {library}、表情包 {stickers}，跳过 {skipped}。',
+        'chip.retry': '重新加载人设状态',
+        'sticker.badType': '只支持 PNG / JPEG / GIF / WebP 图片。',
+        'issue.corrupt-store': '数据文件损坏，原文件已另存为 {quarantine}，并尝试从备份恢复。',
+        'issue.corrupt-store-nobackup': '数据文件损坏且无法另存，已暂停写入以免覆盖；请检查磁盘权限。',
+        'issue.restored-from-backup': '已从 {file} 恢复数据。',
+        'issue.migrated': '数据目录已迁移到 {to}（旧文件保留）。',
         'age.today': '今天',
         'age.yesterday': '昨天',
         'age.days': '{count} 天前',
@@ -299,7 +309,8 @@ window.__ModuleLoader__.load({
         'card.defaultName': 'New character',
         'card.copy': 'Duplicate',
         'card.delete': 'Delete',
-        'card.deleteConfirm': 'Delete this character card? All of its memories, diaries, and library entries will be deleted too.',
+        'card.deleteConfirm': 'Delete this character card? All of its memories, diaries, library entries, and stickers will be deleted too.',
+        'card.discardConfirm': 'This character has unsaved changes. Continue and lose them?',
         'card.traits': 'Behavior weights',
         'card.traitsHint': 'Each weight has a name and a 0–100 value. Add your own (teasing, clingy, formal…), delete, or rename them; higher values make the trait stronger.',
         'card.addTrait': 'Add weight',
@@ -501,7 +512,7 @@ window.__ModuleLoader__.load({
         'io.importAll': 'Import full backup',
         'io.exported': 'Exported.',
         'io.invalid': 'That file is not valid JSON.',
-        'io.tooLarge': 'File is too large (8MB max).',
+        'io.tooLarge': 'File is too large (64MB max).',
         'io.merge': 'Merge',
         'io.replace': 'Replace',
         'io.merged': 'Merged.',
@@ -510,6 +521,15 @@ window.__ModuleLoader__.load({
         'io.failed': 'Export failed.',
         'io.hint': 'Exports a JSON file; importing can merge or replace.',
         'io.scopeNote': 'A full backup does not enable chats outside your current scope.',
+        'io.replaceConfirm': 'Replace import will overwrite the current data. Continue?',
+        'io.kindMismatch': 'This file is a "{kind}" export, which does not match the current selection.',
+        'io.imported': 'Imported: {cards} cards, {memories} memories, {diaries} diaries, {library} library entries, {stickers} stickers; skipped {skipped}.',
+        'chip.retry': 'Reload persona state',
+        'sticker.badType': 'Only PNG / JPEG / GIF / WebP images are supported.',
+        'issue.corrupt-store': 'The data file was corrupted; it was preserved as {quarantine} and a backup was restored.',
+        'issue.corrupt-store-nobackup': 'The data file is corrupted and could not be preserved, so writes are paused to avoid overwriting it. Check disk permissions.',
+        'issue.restored-from-backup': 'Data restored from {file}.',
+        'issue.migrated': 'Data directory moved to {to} (the old file is kept).',
         'age.today': 'today',
         'age.yesterday': 'yesterday',
         'age.days': '{count} days ago',
@@ -533,6 +553,10 @@ window.__ModuleLoader__.load({
       let snapshot = { state: null, error: '', loading: false }
       const listeners = new Set()
       let started = false
+      let requestSeq = 0
+      let pollTimer = null
+      let onFocus = null
+      let onVisibility = null
 
       const publish = (patch) => {
         snapshot = { ...snapshot, ...patch }
@@ -568,16 +592,22 @@ window.__ModuleLoader__.load({
       }
 
       const refresh = async () => {
+        if (!listeners.size) return
+        const seq = ++requestSeq
         publish({ loading: true })
         try {
           const data = await request('/state')
+          if (seq !== requestSeq) return
           publish({ state: data, error: '', loading: false })
         } catch (error) {
+          if (seq !== requestSeq) return
           publish({ error: error && error.message ? error.message : String(error), loading: false })
         }
       }
 
       const mutate = async (path, body) => {
+        // Any mutation supersedes an in-flight refresh; its response is newer.
+        requestSeq += 1
         try {
           const data = await request(path, body)
           publish({ state: data.state || snapshot.state, error: '' })
@@ -588,15 +618,41 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const start = () => {
+        if (started) return
+        started = true
+        refresh()
+        pollTimer = setInterval(refresh, 15000)
+        if (typeof window !== 'undefined') {
+          onFocus = () => refresh()
+          onVisibility = () => {
+            if (document.visibilityState === 'visible') refresh()
+          }
+          window.addEventListener('focus', onFocus)
+          document.addEventListener('visibilitychange', onVisibility)
+        }
+      }
+
+      const stop = () => {
+        if (!started) return
+        started = false
+        if (pollTimer) clearInterval(pollTimer)
+        pollTimer = null
+        if (onFocus) window.removeEventListener('focus', onFocus)
+        if (onVisibility) document.removeEventListener('visibilitychange', onVisibility)
+        onFocus = null
+        onVisibility = null
+      }
+
       return {
         getSnapshot: () => snapshot,
         subscribe(listener) {
           listeners.add(listener)
-          if (!started) {
-            started = true
-            refresh()
+          start()
+          return () => {
+            listeners.delete(listener)
+            if (!listeners.size) stop()
           }
-          return () => listeners.delete(listener)
         },
         refresh,
         mutate,
@@ -713,6 +769,31 @@ window.__ModuleLoader__.load({
     function fileStamp() {
       const now = new Date()
       return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+    }
+
+    function safeExternalUrl(value) {
+      try {
+        const url = new URL(String(value), window.location.origin)
+        return ['http:', 'https:', 'mailto:'].includes(url.protocol)
+      } catch {
+        return false
+      }
+    }
+
+    function issueText(t, issue) {
+      if (!issue || !issue.kind) return ''
+      if (issue.kind === 'corrupt-store') {
+        return issue.quarantined
+          ? t('issue.corrupt-store', { quarantine: issue.quarantine })
+          : t('issue.corrupt-store-nobackup')
+      }
+      if (issue.kind === 'restored-from-backup') {
+        return t('issue.restored-from-backup', { file: issue.file })
+      }
+      if (issue.kind === 'migrated') {
+        return t('issue.migrated', { to: issue.to })
+      }
+      return String(issue.kind) + (issue.message ? '：' + issue.message : '')
     }
 
     function Btn(props) {
@@ -860,6 +941,8 @@ window.__ModuleLoader__.load({
       const [note, setNote] = useState('')
       const fileRef = useRef(null)
 
+      const MAX_IMPORT_BYTES = 64 * 1024 * 1024
+
       const exportNow = async () => {
         setNote('')
         try {
@@ -880,7 +963,7 @@ window.__ModuleLoader__.load({
         const file = event.target.files && event.target.files[0]
         event.target.value = ''
         if (!file) return
-        if (file.size > 8 * 1024 * 1024) {
+        if (file.size > MAX_IMPORT_BYTES) {
           setNote(t('io.tooLarge'))
           return
         }
@@ -889,7 +972,11 @@ window.__ModuleLoader__.load({
           try {
             const payload = JSON.parse(String(reader.result))
             setPending({ name: file.name, payload })
-            setNote('')
+            setNote(
+              payload && payload.kind && payload.kind !== kind
+                ? t('io.kindMismatch', { kind: payload.kind })
+                : '',
+            )
           } catch {
             setNote(t('io.invalid'))
           }
@@ -900,11 +987,24 @@ window.__ModuleLoader__.load({
 
       const apply = (mode) => {
         if (!pending) return
+        if (mode === 'replace' && !window.confirm(t('io.replaceConfirm'))) return
         run(async () => {
-          await store.mutate('/import', { kind, mode, payload: pending.payload })
+          const data = await store.mutate('/import', { kind, mode, payload: pending.payload })
           setPending(null)
-          setNote(mode === 'replace' ? t('io.replaced') : t('io.merged'))
-        }, t('io.done'))
+          const counts = data || {}
+          setNote(
+            t('io.done') +
+              ' ' +
+              t('io.imported', {
+                cards: counts.cards || 0,
+                memories: counts.memories || 0,
+                diaries: counts.diaries || 0,
+                library: counts.library || 0,
+                stickers: counts.stickers || 0,
+                skipped: counts.skipped || 0,
+              }),
+          )
+        })
       }
 
       return h(
@@ -994,6 +1094,27 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
       const [draft, setDraft] = useState(null)
+      const [draftDirty, setDraftDirty] = useState(false)
+      const dirtyRef = useRef(false)
+
+      const cloneCard = (card) => ({
+        ...card,
+        sections: (card.sections || []).map((section) => ({ ...section })),
+        traits: asTraitArray(card.traits),
+      })
+
+      const setDraftEdited = useCallback((next) => {
+        dirtyRef.current = true
+        setDraftDirty(true)
+        setDraft(next)
+      }, [])
+
+      const resetDraft = useCallback((card) => {
+        if (!card) return
+        dirtyRef.current = false
+        setDraftDirty(false)
+        setDraft(cloneCard(card))
+      }, [])
 
       // The store caches one snapshot for the whole page. Re-read on every
       // settings open so archive/session changes made elsewhere show up.
@@ -1003,13 +1124,17 @@ window.__ModuleLoader__.load({
 
       const activeId = state && state.activeCardId
       const activeStamp = state && state.activeCard ? state.activeCard.updatedAt : 0
+      const prevActiveRef = useRef(null)
       useEffect(() => {
         if (!state || !state.activeCard) return
-        setDraft({
-          ...state.activeCard,
-          sections: (state.activeCard.sections || []).map((section) => ({ ...section })),
-          traits: asTraitArray(state.activeCard.traits),
-        })
+        const cardChanged = prevActiveRef.current !== activeId
+        prevActiveRef.current = activeId
+        // Switching cards discards the draft (the user already confirmed);
+        // an updatedAt change of the same card never overwrites an edit.
+        if (!cardChanged && dirtyRef.current) return
+        dirtyRef.current = false
+        setDraftDirty(false)
+        setDraft(cloneCard(state.activeCard))
       }, [activeId, activeStamp])
 
       const run = useCallback(
@@ -1091,6 +1216,17 @@ window.__ModuleLoader__.load({
         ),
         h(Notice, { notice }),
         snap.error ? h(Notice, { notice: { ok: false, text: snap.error } }) : null,
+        state.persistError
+          ? h(Notice, { notice: { ok: false, text: state.persistError } })
+          : null,
+        Array.isArray(state.issues) && state.issues.length
+          ? h(Notice, {
+              notice: {
+                ok: false,
+                text: state.issues.map((issue) => issueText(t, issue)).filter(Boolean).join(' '),
+              },
+            })
+          : null,
         h(
           'nav',
           { className: 'dspm-tabs', role: 'tablist' },
@@ -1110,7 +1246,17 @@ window.__ModuleLoader__.load({
           ),
         ),
         tab === 'persona'
-          ? h(PersonaTab, { t, state, draft, setDraft, run, busy, useSessions: props.useSessions })
+          ? h(PersonaTab, {
+              t,
+              state,
+              draft,
+              draftDirty,
+              setDraft: setDraftEdited,
+              resetDraft,
+              run,
+              busy,
+              useSessions: props.useSessions,
+            })
           : null,
         tab === 'memory'
           ? h(MemoryTab, { t, state, run, busy })
@@ -1229,7 +1375,7 @@ window.__ModuleLoader__.load({
     }
 
     function PersonaTab(props) {
-      const { t, state, draft, setDraft, run, busy, useSessions } = props
+      const { t, state, draft, draftDirty, setDraft, resetDraft, run, busy, useSessions } = props
       if (!draft) return null
       const sections = Array.isArray(draft.sections) ? draft.sections : []
       const traits = asTraitArray(draft.traits)
@@ -1287,12 +1433,13 @@ window.__ModuleLoader__.load({
       })
 
       const save = () =>
-        run(
-          () => store.mutate('/card', { action: 'save', card: cardPayload() }),
-          t('notice.cardSaved'),
-        )
+        run(async () => {
+          const data = await store.mutate('/card', { action: 'save', card: cardPayload() })
+          resetDraft(data.state && data.state.activeCard ? data.state.activeCard : data.card)
+        }, t('notice.cardSaved'))
 
-      const create = () =>
+      const create = () => {
+        if (draftDirty && !window.confirm(t('card.discardConfirm'))) return
         run(async () => {
           const data = await store.mutate('/card', {
             action: 'create',
@@ -1300,6 +1447,7 @@ window.__ModuleLoader__.load({
           })
           await store.mutate('/card', { action: 'activate', id: data.card.id })
         }, t('notice.cardSaved'))
+      }
 
       const remove = () => {
         if (!window.confirm(t('card.deleteConfirm'))) return
@@ -1332,8 +1480,14 @@ window.__ModuleLoader__.load({
                 className: 'dspm-select',
                 value: state.activeCardId,
                 disabled: busy,
-                onChange: (event) =>
-                  run(() => store.mutate('/card', { action: 'activate', id: event.target.value })),
+                onChange: (event) => {
+                  const nextId = event.target.value
+                  if (draftDirty && !window.confirm(t('card.discardConfirm'))) {
+                    event.target.value = String(state.activeCardId)
+                    return
+                  }
+                  run(() => store.mutate('/card', { action: 'activate', id: nextId }))
+                },
               },
               state.cards.map((card) =>
                 h('option', { key: card.id, value: card.id }, card.name + (card.title ? ' · ' + card.title : '')),
@@ -1520,6 +1674,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dspm-actions' },
           h(Btn, { variant: 'primary', onClick: save, disabled: busy }, busy ? t('btn.saving') : t('btn.save')),
+          draftDirty ? h('span', { className: 'dspm-hint' }, t('card.unsaved')) : null,
         ),
         ),
       )
@@ -1805,16 +1960,18 @@ window.__ModuleLoader__.load({
           { className: 'dspm-mem-meta' },
           entry.tags.map((tag) => h('span', { key: tag, className: 'dspm-tag' }, '#' + tag)),
           entry.url
-            ? h(
-                'a',
-                {
-                  className: 'dspm-lib-link',
-                  href: entry.url,
-                  target: '_blank',
-                  rel: 'noreferrer',
-                },
-                entry.url,
-              )
+            ? safeExternalUrl(entry.url)
+              ? h(
+                  'a',
+                  {
+                    className: 'dspm-lib-link',
+                    href: entry.url,
+                    target: '_blank',
+                    rel: 'noreferrer',
+                  },
+                  entry.url,
+                )
+              : h('span', { className: 'dspm-lib-link' }, entry.url)
             : null,
           h('span', null, t('lib.source.' + (entry.source || 'manual'))),
           h('span', null, t('lib.updated', { time: formatDateTime(entry.updatedAt) })),
@@ -2034,10 +2191,15 @@ window.__ModuleLoader__.load({
 
       const pickFile = (event) => {
         const file = event.target.files && event.target.files[0]
+        // Reset immediately so picking the same file again still fires change.
+        event.target.value = ''
         if (!file) return
+        if (!/^image\/(png|jpeg|gif|webp)$/.test(String(file.type || ''))) {
+          window.alert(t('sticker.badType'))
+          return
+        }
         if (file.size > 2 * 1024 * 1024) {
           window.alert(t('sticker.tooLarge'))
-          event.target.value = ''
           return
         }
         const reader = new FileReader()
@@ -2568,6 +2730,8 @@ window.__ModuleLoader__.load({
       const snap = usePersona()
       const state = snap.state
       const [menu, setMenu] = useState(null)
+      const [error, setError] = useState('')
+      const menuRef = useRef(null)
 
       useEffect(() => {
         if (!menu) return undefined
@@ -2575,17 +2739,54 @@ window.__ModuleLoader__.load({
         const onKey = (event) => {
           if (event.key === 'Escape') setMenu(null)
         }
+        const onScroll = (event) => {
+          // Scrolling inside the menu must not dismiss it.
+          if (menuRef.current && event.target && menuRef.current.contains(event.target)) return
+          setMenu(null)
+        }
+        const onResize = () => setMenu(null)
         document.addEventListener('click', close)
         document.addEventListener('keydown', onKey)
-        window.addEventListener('scroll', close, true)
+        window.addEventListener('scroll', onScroll, true)
+        window.addEventListener('resize', onResize)
+        // CSS decides the real height; clamp once the menu is in the DOM so a
+        // short window cannot push it off screen.
+        const frame = requestAnimationFrame(() => {
+          const el = menuRef.current
+          if (!el) return
+          const rect = el.getBoundingClientRect()
+          const maxX = Math.max(8, window.innerWidth - rect.width - 8)
+          const maxY = Math.max(8, window.innerHeight - rect.height - 8)
+          setMenu((current) => {
+            if (!current) return current
+            const x = Math.min(current.x, maxX)
+            const y = Math.min(current.y, maxY)
+            return x === current.x && y === current.y ? current : { ...current, x, y }
+          })
+        })
         return () => {
+          cancelAnimationFrame(frame)
           document.removeEventListener('click', close)
           document.removeEventListener('keydown', onKey)
-          window.removeEventListener('scroll', close, true)
+          window.removeEventListener('scroll', onScroll, true)
+          window.removeEventListener('resize', onResize)
         }
       }, [menu])
 
-      if (!state) return null
+      if (!state) {
+        if (!snap.error) return null
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'dspm-chip',
+            title: t('chip.retry') + '：' + snap.error,
+            onClick: () => store.refresh(),
+          },
+          h('span', { className: 'dspm-chip-dot' }),
+          h('span', { className: 'dspm-chip-text' }, t('chip.retry')),
+        )
+      }
       const sessionId = props.sessionId ? String(props.sessionId) : ''
       if (!sessionId) return null
       const sessions = Array.isArray(state.settings.personaSessions) ? state.settings.personaSessions : []
@@ -2594,26 +2795,47 @@ window.__ModuleLoader__.load({
       const cards = Array.isArray(state.cards) ? state.cards : []
       const activeCardId = state.activeCardId
 
-      const toggleSession = () => {
+      const toggleSession = async () => {
         setMenu(null)
-        store.mutate('/toggle', { sessionId, enabled: !enabled }).catch(() => {})
+        setError('')
+        try {
+          await store.mutate('/toggle', { sessionId, enabled: !enabled })
+        } catch (failure) {
+          setError((failure && failure.message) || String(failure))
+        }
       }
 
-      const activateCard = (id) => {
+      const activateCard = async (id) => {
         setMenu(null)
-        store.mutate('/card', { action: 'activate', id }).catch(() => {})
-        if (!enabled) store.mutate('/toggle', { sessionId, enabled: true }).catch(() => {})
+        setError('')
+        try {
+          await store.mutate('/card', { action: 'activate', id })
+          if (!enabled) await store.mutate('/toggle', { sessionId, enabled: true })
+        } catch (failure) {
+          setError((failure && failure.message) || String(failure))
+        }
+      }
+
+      const openMenuAt = (x, y) => {
+        const width = 230
+        const height = Math.min(360, 96 + cards.length * 34)
+        setMenu({
+          x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+          y: Math.max(8, Math.min(y, window.innerHeight - height - 8)),
+        })
       }
 
       const openMenu = (event) => {
         event.preventDefault()
         event.stopPropagation()
-        const width = 230
-        const height = Math.min(360, 96 + cards.length * 34)
-        setMenu({
-          x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
-          y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
-        })
+        openMenuAt(event.clientX, event.clientY)
+      }
+
+      const openMenuFromKeyboard = (event) => {
+        if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+        event.preventDefault()
+        const rect = event.currentTarget.getBoundingClientRect()
+        openMenuAt(rect.left, rect.bottom)
       }
 
       return h(
@@ -2629,6 +2851,7 @@ window.__ModuleLoader__.load({
             'aria-haspopup': 'menu',
             onClick: toggleSession,
             onContextMenu: openMenu,
+            onKeyDown: openMenuFromKeyboard,
           },
           h('span', { className: 'dspm-chip-dot' }),
           h(
@@ -2638,11 +2861,15 @@ window.__ModuleLoader__.load({
           ),
           h('span', { className: 'dspm-chip-state' }, enabled ? t('chip.stateOn') : t('chip.stateOff')),
         ),
+        error
+          ? h('span', { className: 'dspm-chip-error', role: 'status' }, error)
+          : null,
         menu
           ? h(
               'div',
               {
                 className: 'dspm-context-menu',
+                ref: menuRef,
                 style: { left: menu.x + 'px', top: menu.y + 'px' },
                 onClick: (event) => event.stopPropagation(),
               },
@@ -2807,6 +3034,7 @@ window.__ModuleLoader__.load({
 .dspm-sticker-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .dspm-foot { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 11px; word-break: break-all; }
 .dspm-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; cursor: pointer; }
+.dspm-chip-error { margin-left: 6px; color: var(--dsw-alias-state-error-primary, #d33); font-size: 11px; }
 .dspm-chip.is-on { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
 .dspm-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-state-idle-primary); flex: none; }
 .dspm-chip.is-on .dspm-chip-dot { background: var(--dsw-alias-state-success-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 22%, transparent); }
